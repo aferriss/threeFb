@@ -1,0 +1,746 @@
+<html>
+<head>
+<script src="three.js"></script>
+<script src="OrbitControls.js"></script>
+<script src="FirstPersonControls.js"></script>
+<script src="PointerLockControls.js"></script>
+<script src="OBJLoader.js"></script>
+<script src="SceneLoader.js"></script>
+<!--<script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.0/jquery.min.js"></script>-->
+<style>
+body{
+	padding: 0px;
+	margin: 0px;
+
+}
+</style>
+</head>
+<body>
+<div id="container"></div>
+
+<script id="passThrough" type="x-shader/x-fragment">
+		varying vec2 vUv;
+		uniform sampler2D tex;
+
+		void main() {
+			gl_FragColor = texture2D(tex, vUv);
+		}
+</script>
+
+<script id="fxaa" type="x-shader/x-fragment">
+		uniform sampler2D tDiffuse;
+		uniform vec2 resolution;
+
+		#define FXAA_REDUCE_MIN   (1.0/128.0)
+		#define FXAA_REDUCE_MUL   (1.0/8.0)
+		#define FXAA_SPAN_MAX     8.0
+
+		void main() {
+
+			vec3 rgbNW = texture2D( tDiffuse, ( gl_FragCoord.xy + vec2( -1.0, -1.0 ) ) * resolution ).xyz;
+			vec3 rgbNE = texture2D( tDiffuse, ( gl_FragCoord.xy + vec2( 1.0, -1.0 ) ) * resolution ).xyz;
+			vec3 rgbSW = texture2D( tDiffuse, ( gl_FragCoord.xy + vec2( -1.0, 1.0 ) ) * resolution ).xyz;
+			vec3 rgbSE = texture2D( tDiffuse, ( gl_FragCoord.xy + vec2( 1.0, 1.0 ) ) * resolution ).xyz;
+			vec4 rgbaM  = texture2D( tDiffuse,  gl_FragCoord.xy  * resolution );
+			vec3 rgbM  = rgbaM.xyz;
+			vec3 luma = vec3( 0.299, 0.587, 0.114 );
+
+			float lumaNW = dot( rgbNW, luma );
+			float lumaNE = dot( rgbNE, luma );
+			float lumaSW = dot( rgbSW, luma );
+			float lumaSE = dot( rgbSE, luma );
+			float lumaM  = dot( rgbM,  luma );
+			float lumaMin = min( lumaM, min( min( lumaNW, lumaNE ), min( lumaSW, lumaSE ) ) );
+			float lumaMax = max( lumaM, max( max( lumaNW, lumaNE) , max( lumaSW, lumaSE ) ) );
+
+			vec2 dir;
+			dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+			dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+
+			float dirReduce = max( ( lumaNW + lumaNE + lumaSW + lumaSE ) * ( 0.25 * FXAA_REDUCE_MUL ), FXAA_REDUCE_MIN );
+
+			float rcpDirMin = 1.0 / ( min( abs( dir.x ), abs( dir.y ) ) + dirReduce );
+			dir = min( vec2( FXAA_SPAN_MAX,  FXAA_SPAN_MAX),
+				  max( vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),
+						dir * rcpDirMin)) * resolution;
+			vec4 rgbA = (1.0/2.0) * (
+        	texture2D(tDiffuse,  gl_FragCoord.xy  * resolution + dir * (1.0/3.0 - 0.5)) +
+			texture2D(tDiffuse,  gl_FragCoord.xy  * resolution + dir * (2.0/3.0 - 0.5)));
+    		vec4 rgbB = rgbA * (1.0/2.0) + (1.0/4.0) * (
+			texture2D(tDiffuse,  gl_FragCoord.xy  * resolution + dir * (0.0/3.0 - 0.5)) +
+      		texture2D(tDiffuse,  gl_FragCoord.xy  * resolution + dir * (3.0/3.0 - 0.5)));
+    		float lumaB = dot(rgbB, vec4(luma, 0.0));
+
+			if ( ( lumaB < lumaMin ) || ( lumaB > lumaMax ) ) {
+
+				gl_FragColor = rgbA;
+
+			} else {
+				gl_FragColor = rgbB;
+
+			}
+
+		}
+</script>
+
+<script id ="emboss" type="x-shader/x-fragment">
+varying vec2 vUv;
+uniform sampler2D u_image;
+uniform float step_w;
+uniform float step_h;
+
+      vec2 offset[9];
+      vec2 tc = vUv*1.25;
+
+      void main() {
+        float kernel[9];
+        vec4 sum = vec4(0.0);
+
+        offset[0] = vec2(-step_w, -step_h);
+		offset[1] = vec2(0.0, -step_h);
+		offset[2] = vec2(step_w, -step_h);
+		offset[3] = vec2(-step_w, 0.0);
+		offset[4] = vec2(0.0, 0.0);
+		offset[5] = vec2(step_w, 0.0);
+		offset[6] = vec2(-step_w, step_h);
+		offset[7] = vec2(0.0, step_h);
+		offset[8] = vec2(step_w, step_h);
+
+		kernel[0] = 0.0; kernel[1] = 6.1; kernel[2] = 0.0;
+		kernel[3] = 0.0; kernel[4] = -3.0; kernel[5] = 0.0;
+		kernel[6] = 0.0; kernel[7] = -3.0; kernel[8] = 0.0;
+
+		for (int i = 0; i < 9; i++) {
+			sum += texture2D(u_image,vUv+offset[i])*(kernel[i]);
+		}
+
+		sum += texture2D(u_image, vec2(tc.x - step_w, tc.y)); //left
+		sum += texture2D(u_image, vec2(tc.x + step_w, tc.y)); //right
+		sum += texture2D(u_image, vec2(tc.x, tc.y - step_w)); //bottom
+		sum += texture2D(u_image, vec2(tc.x, tc.y + step_h)); //top
+		sum /= 6.0;
+
+          vec4 c = sum;
+    
+
+        gl_FragColor = c+ vec4(vec3(0.009),0.0) +0.5;
+
+      }
+</script>
+
+<script id="sharpen" type="x-shader/x-fragment">
+	uniform sampler2D tex;
+	varying vec2 vUv;
+	varying vec3 vecPos;
+	varying vec3 vecNormal;
+	uniform vec2 res;
+	uniform float step_w;
+	uniform float step_h;
+
+	uniform vec3 pointLightColor[MAX_POINT_LIGHTS];
+	uniform vec3 pointLightPosition[MAX_POINT_LIGHTS];
+	uniform float pointLightDistance[MAX_POINT_LIGHTS];
+
+	vec3 rgb2hsv(vec3 c){
+	    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+	    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+	    
+	    float d = q.x - min(q.w, q.y);
+	    float e = 1.0e-10;
+	    return vec3(abs(( (q.z + (q.w - q.y) / (6.0 * d + e))) ), d / (q.x + e), q.x);
+	}
+
+	vec3 hsv2rgb(vec3 c){
+	    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+	    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+	}
+
+//	vec2 texelWidth = vec2(1514.0,861.0);
+//	float mult = 1.0;
+	void main() {
+
+/*
+		float tl = abs(texture2D(tex, vUv + texelWidth * vec2(-step_w, -step_h)).x);   // top left
+    	float  l = abs(texture2D(tex, vUv + texelWidth * vec2(-step_w,  0.0)).x);   // left
+    	float bl = abs(texture2D(tex, vUv + texelWidth * vec2(-step_w,  step_h)).x);   // bottom left
+    	float  t = abs(texture2D(tex, vUv + texelWidth * vec2( 0.0, -step_h)).x);   // top
+    	float  b = abs(texture2D(tex, vUv + texelWidth * vec2( 0.0,  step_h)).x);   // bottom
+    	float tr = abs(texture2D(tex, vUv + texelWidth * vec2( step_w, -step_h)).x);   // top right
+    	float  r = abs(texture2D(tex, vUv + texelWidth * vec2( step_w,  0.0)).x);   // right
+    	float br = abs(texture2D(tex, vUv + texelWidth * vec2( step_w,  step_h)).x);   // bottom right
+
+    	float dX = tr*mult + 2.0*r*mult + br*mult -tl*mult - 2.0*l*mult - bl*mult;
+    	float dY = bl*mult + 2.0*b*mult + br*mult -tl*mult - 2.0*t*mult - tr*mult;
+
+    	float blur = t + b + l + r;
+    	blur /= 4.0;
+
+    	vec3 col = normalize(vec3(dX,dY,1.0/2.0)+(blur*0.25));//*blur;
+    	col *= 0.5;
+    	col += 0.5;
+*/
+
+
+		
+	  vec4 addedLights = vec4(vec3(0.0),1.0);
+	  float shin = 100.0;
+
+	  for(int i = 0; i< MAX_POINT_LIGHTS; i++){
+	  	vec3 lightDirection = normalize(vecPos - pointLightPosition[i]);
+	  	float D = length( lightDirection);
+	  	vec3 falloff = vec3(0.01,0.25,2.0);
+	  	vec3 N = normalize(pointLightColor[i]);
+	  	vec3 L = normalize(lightDirection);
+
+	    float attenuation = 1.0 / (falloff.x + (falloff.y*D) + (falloff.z*D*D) );
+
+	  	float sf = max(0.0,dot(N,L));
+	  	sf = pow(sf, shin);
+	  	//float spec = pow(max(0.0,dot(N, normalize(pointLightColor[i] + lightDirection))), shin);
+	  	//addedLights.rgb += clamp((pointLightColor[i]) * max(dot(N, L), 0.0),0.0,1.0);
+
+	  	addedLights.rgb += clamp(dot(-lightDirection, vecNormal),0.0,1.0)*(pointLightColor[i]);
+	  	addedLights.rgb += sf;
+	  	addedLights *= attenuation;
+	  }
+		
+	  float zoom = 1.0;
+	  vec2 pos = (vUv - vec2(0.5,0.5)) * (zoom) + vec2(0.5);
+
+	  vec2 sharpenOffset = vec2(step_w, step_h)*0.0008;
+	  vec4 color = texture2D(tex, pos);//*(addedLights);
+
+	  //blur
+	  color += texture2D(tex, vec2(vUv.x - step_w, vUv.y)); //left
+	  color += texture2D(tex, vec2(vUv.x + step_w, vUv.y)); //right
+	  color += texture2D(tex, vec2(vUv.x, vUv.y - step_w)); //bottom
+	  color += texture2D(tex, vec2(vUv.x, vUv.y + step_h)); //top
+	  color /= 6.0;
+
+	  //emboss or sharpen
+	  color += texture2D(tex, vec2(vUv.x, vUv.y)-sharpenOffset); //bottom
+	  color -= texture2D(tex, vec2(vUv.x, vUv.y) + sharpenOffset*-100.0); //top
+
+	  //reduce color if all white
+	  float avg = (color.r+color.g+color.b)/3.0;
+	  //color = avg < 0.45 ? color+0.1 : color;
+	  color = avg > 0.65 ? color-0.1 : color;
+
+	  vec3 hsv = rgb2hsv(color.rgb);
+	  hsv.r +=0.1;
+	  hsv.r = mod(hsv.r, 1.0);
+	  //hsv.g += 0.001;
+	  //hsv.g = mod(hsv.g, 1.0);
+	 // hsv.b += 0.1;
+	  //hsb.b = mod(hsv.b, 1.0);
+	  vec3 rgb = hsv2rgb(hsv);
+
+	  gl_FragColor = color+(addedLights*0.5) +0.01;
+	}
+</script>
+
+<script id="vertexShader" type="x-shader/x-vertex">
+		varying vec2 vUv;
+		varying vec3 vecPos;
+		varying vec3 vecNormal;
+
+		vec4 zoom = vec4(1.005,1.005,1.0,1.0);
+		void main() {
+			vUv = uv;
+			vecPos = (modelMatrix * vec4(position, 1.0)).xyz;
+			vecNormal = (modelMatrix * vec4(normal, 0.0)).xyz;
+			gl_Position =  projectionMatrix * viewMatrix * vec4( vecPos, 1.0 );
+
+		}
+</script>
+
+
+<script type="x-shader/x-vertex" id="vertexShader2">
+	varying vec2 vUv;
+	varying vec3 vecPos;
+	varying vec3 vecNormal;
+	uniform sampler2D tex;
+
+	void main(){
+
+		vec3 newVertexPos;
+		vec4 dv;
+		float df;
+
+		vUv = uv;
+		vecNormal = normal;
+		dv = texture2D( tex, vUv );
+
+		df = (dv.x + dv.y + dv.z)/3.0;
+		//float dispFactor = mix(-40.0,df,0.5);
+		newVertexPos = vec3(normal + (df * -40.0)) + position;
+
+		gl_Position = projectionMatrix * modelViewMatrix * vec4(newVertexPos,1.0);
+
+	}
+
+</script>
+
+
+<script>
+var container, scene, renderer, controls;
+var scene, screenScene, baseTex, tex1, tex2, camera, screenCamera, plane, cube, sphere, shader1, light;
+var w = window.innerWidth;
+var h = window.innerHeight;
+var wHalf = w/2;
+var hHalf = h/2;
+var clock = new THREE.Clock();
+var camControls;
+var objects = [];
+var ray;
+var time = Date.now();
+var moveForward = false;
+var moveBackward = false;
+var moveLeft = false;
+var moveRight = false;
+var walt;
+var controlsEnabled = true;
+
+var prevTime = performance.now();
+var velocity = new THREE.Vector3();
+
+container = document.getElementById('container');
+document.addEventListener('mousedown', onDocumentMouseDown, false);
+
+function onDocumentMouseDown(event){
+	//console.log(camControls);
+}
+
+
+
+var havePointerLock = 'pointerLockElement' in document || 'mozPointerLockElement' in document || 'webkitPointerLockElement' in document;
+
+	if( havePointerLock ){
+		var element = document.body;
+
+		var pointerlockchange = function ( event ) {
+			if(document.pointerLockElement === element || document.mozPointerLockElement === element || document.webkitPointerLockElement === element){
+				controlsEnabled = true;
+				controls.enabled = true;
+				console.log("controls are true");
+			} else{
+				controls.enabled = false;
+				console.log("controls are false");
+			}
+		}
+		var pointerlockerror = function ( event ) {
+			console.log(event);
+		}
+
+		document.addEventListener( 'pointerlockchange', pointerlockchange, false );
+		document.addEventListener( 'mozpointerlockchange', pointerlockchange, false );
+		document.addEventListener( 'webkitpointerlockchange', pointerlockchange, false );
+
+		document.addEventListener( 'pointerlockerror', pointerlockerror, false );
+		document.addEventListener( 'mozpointerlockerror', pointerlockerror, false );
+		document.addEventListener( 'webkitpointerlockerror', pointerlockerror, false );
+
+		container.addEventListener('click', function(event){
+			element.requestPointerLock = element.requestPointerLock || element.mozRequestPointerLock || element.webkitRequestPointerLock;
+			if ( /Firefox/i.test( navigator.userAgent ) ) {
+				var fullscreenchange = function ( event ) {
+
+					if ( document.fullscreenElement === element || document.mozFullscreenElement === element || document.mozFullScreenElement === element ) {
+						document.removeEventListener( 'fullscreenchange', fullscreenchange );
+						document.removeEventListener( 'mozfullscreenchange', fullscreenchange );
+						element.requestPointerLock();
+					}
+				}
+
+				document.addEventListener( 'fullscreenchange', fullscreenchange, false );
+				document.addEventListener( 'mozfullscreenchange', fullscreenchange, false );
+				element.requestFullscreen = element.requestFullscreen || element.mozRequestFullscreen || element.mozRequestFullScreen || element.webkitRequestFullscreen;
+				element.requestFullscreen();
+
+			} else {
+				element.requestPointerLock();
+			}
+
+		}, false );
+		
+	}
+
+
+init();
+animate();
+
+function init(){
+	var manager = new THREE.LoadingManager();
+	manager.onProgress = function ( item, loaded, total ){
+		console.log(item, loaded, total);
+	};	
+
+	var onProgress = function (xhr){
+		if( xhr.lengthComputable){
+			var percentComplete = xhr.loaded / xhr.total * 100;
+			console.log(Math.round(percentComplete, 2) + '% downloaded');
+		}
+	};
+
+	var onError = function(xhr){
+
+	};
+
+
+	scene = new THREE.Scene();
+	screenScene = new THREE.Scene();
+
+	//scene.fog = new THREE.FogExp2( 0x000000, 0.9 );
+	//screenScene.fog = new THREE.FogExp2( 0x000000, 0.09 );
+	var ambient = new THREE.AmbientLight(0x111111);
+	//scene.add(ambient);
+
+	light = new THREE.PointLight(0xFF0040,0.7,1.0);
+	light.position.set(0,400,0);
+	//scene.add(light);
+
+	var light2 = new THREE.PointLight(0x0FDFFF,0.7,1.0);
+	light2.position.set(300,500,200);
+	//scene.add(light2);
+
+	var light3 = new THREE.PointLight(0xFFEE00,0.6,1.0);
+	light3.position.set(-300,50,600);
+	//scene.add(light3);
+
+
+	var light4 = new THREE.PointLight(0xffffff,1.5,1.0);
+	light4.position.set(2000,100,370);
+	//scene.add(light4);
+
+		var light5 = new THREE.PointLight(0xffffff,1.5,1.0);
+	//light4.position.set(2000,100,3700);
+	scene.add(light5);
+
+	for( var i = 0; i<20; i++){
+		var color = new THREE.Color(Math.random(), Math.random(), Math.random());
+		var randLight = new THREE.PointLight(color,1.0,4000.1);
+		var randPosX = Math.floor(Math.random()*6000 - 3000);
+		var randPosY = Math.floor(Math.random()*6000 -3000);
+		var randPosZ = Math.floor(Math.random()*6000 - 3000);
+		randLight.position.set(randPosX, randPosY, randPosZ);
+		var sphereG = new THREE.SphereGeometry(30,30,30);
+		var sphereMat = new THREE.MeshPhongMaterial( { color: 0xffffff, wireframe: false, transparent: false, side:THREE.DoubleSide } );
+		var sphereMesh = new THREE.Mesh(sphereG, sphereMat);
+		sphereMesh.position.set(randPosX, randPosY, randPosZ);
+		scene.add(randLight);
+		//scene.add(sphereMesh);
+
+
+	}
+
+
+	tex1 = new THREE.WebGLRenderTarget( w,h, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat });
+	tex2 = new THREE.WebGLRenderTarget( w,h, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat });
+
+	var res = new THREE.Vector2(w, h);
+
+	shader1 = new THREE.ShaderMaterial({
+		uniforms: THREE.UniformsUtils.merge([
+			THREE.UniformsLib['lights'],
+			{
+			time: { type: 'f', value: 0.0},
+			tex: { type: 't', value: null},
+			resolution: {type: 'v2', value: res},
+			step_w: { type: 'f', value: 1.0/w},
+			step_h: { type: 'f', value: 1.0/h} 
+			}
+		]),
+		vertexShader: document.getElementById('vertexShader2').textContent,
+		fragmentShader: document.getElementById('sharpen').textContent,
+		shading: THREE.SmoothShading,
+		side: THREE.DoubleSide,
+		lights: true
+	});
+
+	shader1.uniforms.tex.value = tex2;
+	shader1.needsUpdate = true;
+
+	screenCamera = new THREE.OrthographicCamera( w  / -2, w  /  2, h /  2, h / -2, -10000, 10000 );
+	screenScene.add( screenCamera );
+
+	var screenGeometry = new THREE.PlaneBufferGeometry( w,h );
+	var screenMaterial = new THREE.MeshBasicMaterial( { map: tex1 } );
+	var quad = new THREE.Mesh( screenGeometry, screenMaterial ); 
+	screenScene.add(quad);
+
+	//camera = new THREE.OrthographicCamera(w/-2, w/2,  h/2, h/-2, -10000, 10000);
+	camera = new THREE.PerspectiveCamera(45, w/h, 0.1,40000);
+	//camera.position.set(0,0,5000);
+	
+	//scene.add(camera);
+
+	controls = new THREE.PointerLockControls( camera );
+	controls.getObject().translateY(500);
+	controls.getObject().translateZ(2000);
+	scene.add(controls.getObject());
+
+	var onKeyDown = function ( event ) {
+		switch ( event.keyCode ) {
+			case 38: // up
+			case 87: // w
+				moveForward = true;
+				break;
+			case 37: // left
+			case 65: // a
+				moveLeft = true; break;
+			case 40: // down
+			case 83: // s
+				moveBackward = true;
+				break;
+			case 39: // right
+			case 68: // d
+				moveRight = true;
+				break;
+			case 32: // space
+				if ( canJump === true ) velocity.y += 1050;
+				canJump = false;
+				break;
+		}
+	};
+	var onKeyUp = function ( event ) {
+		switch( event.keyCode ) {
+			case 38: // up
+			case 87: // w
+				moveForward = false;
+				break;
+			case 37: // left
+			case 65: // a
+				moveLeft = false;
+				break;
+			case 40: // down
+			case 83: // s
+				moveBackward = false;
+				break;
+			case 39: // right
+			case 68: // d
+				moveRight = false;
+				break;
+		}
+	};
+
+	document.addEventListener( 'keydown', onKeyDown, false );
+	document.addEventListener( 'keyup', onKeyUp, false );
+
+	ray = new THREE.Raycaster(new THREE.Vector3(),new THREE.Vector3(0,-1,0),0,100);
+	//ray.ray.direction.set(0,-1,0);
+
+	var planeGeo = new THREE.PlaneBufferGeometry(10000,10000);
+	var cubeGeo = new THREE.BoxGeometry(200,200,200);
+	var sphereGeo = new THREE.SphereGeometry(1500, 32, 16);
+	var planeMat = new THREE.MeshBasicMaterial({map: tex2});
+	var wireMaterial = new THREE.MeshPhongMaterial( { color: 0xffffff, wireframe: false, transparent: false, side:THREE.DoubleSide } );
+
+
+
+//floor
+	plane3 = new THREE.Mesh(planeGeo, wireMaterial);
+	plane3.position.set(0,0,0);
+	plane3.rotation.x = 270 * Math.PI/180;
+	scene.add(plane3);
+
+/*
+	for(var i =0; i<100; i++){
+		//wireMaterial = new THREE.MeshPhongMaterial( { color: 0xffffff, wireframe: true, transparent: false } );
+		var rand = Math.floor(Math.random()*2);
+		if(rand == 0){
+			var cubeGeo = new THREE.BoxGeometry(200,200,200);
+			var manyCubes = new THREE.Mesh(cubeGeo, shader1);
+		} else {
+			var cubeGeo = new THREE.PlaneBufferGeometry(200,200);
+
+			var manyCubes = new THREE.Mesh(cubeGeo, wireMaterial);
+			manyCubes.rotation.x = (Math.floor(Math.random()*10) + 90) * Math.PI/180
+			manyCubes.rotation.z = (Math.floor(Math.random()*10) + 90) * Math.PI/180
+		}
+		manyCubes.position.x = Math.floor(Math.random()*3000 - 1500);
+		manyCubes.position.y =Math.floor(Math.random()* 50) * 50 + 25;
+		manyCubes.position.z = -Math.floor(Math.random()*3000 - 1500);
+		scene.add(manyCubes);
+		objects.push(manyCubes);
+	}
+*/
+	cubeGeo = new THREE.BoxGeometry(10000,10000,10000);
+	var bgCube = new THREE.Mesh(cubeGeo, shader1);
+
+	scene.add(bgCube);
+
+
+
+	shader1.needsUpdate = true;
+
+/*
+	var loader = new THREE.OBJLoader( manager );
+	loader.load('female02.obj', function (object){
+		object.traverse( function (child){
+			if( child instanceof THREE.Mesh ){
+				child.material = shader1;
+				child.material.needsUpdate = true;
+
+			}
+		});
+
+		//object.material.map = shader1;
+		//object.material.needsUpdate = true;
+		object.position.set(0,0,0);
+		
+		object.castShadow = true;
+		object.receiveShadow = false;
+		object.scale.set(20,20,20);
+
+		console.log(object);
+		scene.add(object);
+
+		
+	}, onProgress, onError);
+*/
+
+	var loader = new THREE.JSONLoader();
+
+	/*
+	loader.load('cornice.js', function(result){
+		//result.computeTangents();
+		walt = new THREE.Mesh(result, wireMaterial);
+		shader1.needsUpdate = true;
+		walt.geometry.uvsNeedUpdate = true;
+		walt.geometry.buffersNeedUpdate = true;
+		walt.scale.set(500,500,500);
+		walt.position.set(0,0,4000);
+		scene.add(walt);
+		console.log(result);
+
+	});
+	*/
+function assignUVs(geometry) {
+
+
+    geometry.computeBoundingBox();
+
+    var max     = geometry.boundingBox.max;
+    var min     = geometry.boundingBox.min;
+
+    var offset  = new THREE.Vector2(0 - min.x, 0 - min.y);
+    var range   = new THREE.Vector2(max.x - min.x, max.y - min.y);
+
+    geometry.faceVertexUvs[0] = [];
+    var faces = geometry.faces;
+
+    for (i = 0; i < geometry.faces.length ; i++) {
+
+      var v1 = geometry.vertices[faces[i].a];
+      var v2 = geometry.vertices[faces[i].b];
+      var v3 = geometry.vertices[faces[i].c];
+
+      geometry.faceVertexUvs[0].push([
+        new THREE.Vector2( ( v1.x + offset.x ) / range.x , ( v1.y + offset.y ) / range.y ),
+        new THREE.Vector2( ( v2.x + offset.x ) / range.x , ( v2.y + offset.y ) / range.y ),
+        new THREE.Vector2( ( v3.x + offset.x ) / range.x , ( v3.y + offset.y ) / range.y )
+      ]);
+
+    }
+
+    geometry.uvsNeedUpdate = true;
+}
+
+
+	var createMesh = function(geometry){
+		assignUVs(geometry);
+
+		var zmesh = new THREE.Mesh( geometry, shader1 );
+		zmesh.position.set(0,350,0);
+		zmesh.scale.set(25,25,25);
+		zmesh.overdraw = true;
+		scene.add(zmesh);
+		objects.push(zmesh);
+	};
+
+	loader.load('walt.json', createMesh);
+
+	sphere = new THREE.Mesh(sphereGeo, shader1);
+	sphere.position.set(0,800,0);
+	//scene.add(sphere);
+
+	objects.push(bgCube);
+
+	renderer = new THREE.WebGLRenderer( {antialias: true });
+	renderer.setSize(w, h);
+	renderer.autoClear = true;
+	renderer.context.getProgramInfoLog = function () { return '' }; //removes weird vertex attr binding error
+	container.appendChild( renderer.domElement);
+	
+}
+
+function animate(){
+	window.requestAnimationFrame(animate);
+	render();
+	update();
+}
+
+function update(){
+	var delta = clock.getDelta();
+	//controls.update();
+	//camControls.update(delta)
+	//camera.lookAt(cube.position);
+	//camera.rotation.z = Date.now()*0.00005;
+	//controls.isOnObject( false );
+	if (controlsEnabled) {
+		ray.ray.origin.copy( controls.getObject().position );
+		ray.ray.origin.y -= 10;
+
+		var intersections = ray.intersectObjects(objects);
+		var isOnObject = intersections.length > 0;
+		//console.log(isOnObject);
+		time = performance.now();
+		var delta = ( time - prevTime) / 500;
+
+		velocity.x -= velocity.x * 10.0 * delta;
+		velocity.z -= velocity.z * 10.0 * delta;
+		velocity.y -= 9.8 * 100.0 * delta; // 100.0 = mass
+
+		if ( moveForward ) velocity.z -= 3200.0 * delta;
+		if ( moveBackward ) velocity.z += 3200.0 * delta;
+		if ( moveLeft ) velocity.x -= 3200.0 * delta;
+		if ( moveRight ) velocity.x += 3200.0 * delta;
+
+		if ( isOnObject === true ) {
+			velocity.y = Math.max( 0, velocity.y );
+			canJump = true;
+		}
+		controls.getObject().translateX( velocity.x * delta );
+		controls.getObject().translateY( velocity.y * delta );
+		controls.getObject().translateZ( velocity.z * delta );
+		
+		if ( controls.getObject().position.y < 200 ) {
+			velocity.y = 0;
+			controls.getObject().position.y = 200;
+			canJump = true;
+		}
+
+		prevTime = time;
+	}
+	//controls.update( Date.now() - time);
+	
+}
+
+function render(){
+	//cube.position.set(-100,Math.sin(Date.now()*0.005)*100,3000);
+	light.position.set(Math.sin(Date.now()*0.0005)*2000, 100,2900);
+	//sphere.position.set(Math.sin(Date.now()*0.0005)*2000, 100,2900);
+	//cube.rotation.z = (Date.now()*0.005);
+	renderer.render(scene, camera, tex1, true);
+	renderer.render(screenScene, screenCamera, tex2, true);
+	renderer.render(scene, camera);
+}
+
+
+
+
+</script>
+</body>
+</html>
